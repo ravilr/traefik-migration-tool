@@ -12,8 +12,7 @@ import (
 
 	"github.com/traefik/traefik/v2/pkg/provider/kubernetes/crd/traefik/v1alpha1"
 	extensions "k8s.io/api/extensions/v1beta1"
-	networking "k8s.io/api/networking/v1beta1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
@@ -22,6 +21,10 @@ import (
 const separator = "---"
 
 const groupSuffix = "/v1alpha1"
+
+const middlewareSuffix = "kubernetescrd"
+
+const sslMiddlewareRef = "ssl-redirect@file"
 
 const (
 	ruleTypePath             = "Path"
@@ -93,7 +96,7 @@ func convertFile(srcDir, dstDir, filename string) error {
 
 		object, err := parseYaml([]byte(part))
 		if err != nil {
-			log.Printf("err while reading yaml: %v", err)
+			log.Printf("err while reading yaml: %v\n", err)
 			fragments = append(fragments, part)
 			continue
 		}
@@ -108,12 +111,17 @@ func convertFile(srcDir, dstDir, filename string) error {
 		case *networking.Ingress:
 			ingress = obj
 		default:
-			log.Printf("the object is skipped because is not an Ingress: %T", object)
+			log.Printf("the object is skipped because is not an Ingress: %T\n", object)
 			fragments = append(fragments, part)
 			continue
 		}
 
-		objects := convertIngress(ingress)
+		newIngress, objects := convertIngress(ingress)
+		yml, err := encodeYaml(newIngress.DeepCopyObject(), networking.SchemeGroupVersion.Group+"/"+networking.SchemeGroupVersion.Version)
+		if err != nil {
+			return err
+		}
+		fragments = append(fragments, yml)
 		for _, object := range objects {
 			yml, err := encodeYaml(object, v1alpha1.GroupName+groupSuffix)
 			if err != nil {
@@ -205,7 +213,7 @@ func extractItems(items []interface{}) ([]interface{}, []unstructured.Unstructur
 
 	for _, elt := range items {
 		obj := unstructured.Unstructured{Object: elt.(map[string]interface{})}
-		if (obj.GetAPIVersion() == "extensions/v1beta1" || obj.GetAPIVersion() == "networking.k8s.io/v1beta1") && obj.GetKind() == "Ingress" {
+		if (obj.GetAPIVersion() == "extensions/v1beta1" || obj.GetAPIVersion() == "networking.k8s.io/v1") && obj.GetKind() == "Ingress" {
 			toConvert = append(toConvert, obj)
 		} else {
 			toKeep = append(toKeep, elt)
@@ -215,20 +223,28 @@ func extractItems(items []interface{}) ([]interface{}, []unstructured.Unstructur
 	return toKeep, toConvert
 }
 
-// convertIngress converts an *networking.Ingress to a slice of runtime.Object (IngressRoute and Middlewares).
-func convertIngress(ingress *networking.Ingress) []runtime.Object {
+// convertIngress converts an *networking.Ingress to a slice of runtime.Object (Ingress and Middlewares).
+func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime.Object) {
 	logUnsupported(ingress)
 
-	ingressRoute := &v1alpha1.IngressRoute{
-		ObjectMeta: v1.ObjectMeta{Name: ingress.GetName(), Namespace: ingress.GetNamespace(), Annotations: map[string]string{}},
-		Spec: v1alpha1.IngressRouteSpec{
-			EntryPoints: getSliceStringValue(ingress.GetAnnotations(), annotationKubernetesFrontendEntryPoints),
-		},
+	var middlewareNames []string
+
+	newIngress := ingress.DeepCopy()
+
+	// return early, if the ingressClass is not 'traefik*'
+	ingressClass := getStringValue(ingress.GetAnnotations(), annotationKubernetesIngressClass, "")
+	if len(ingressClass) > 0 && !strings.Contains(ingressClass, "traefik") {
+		return newIngress, nil
 	}
 
-	ingressClass := getStringValue(ingress.GetAnnotations(), annotationKubernetesIngressClass, "")
-	if len(ingressClass) > 0 {
-		ingressRoute.GetAnnotations()[annotationKubernetesIngressClass] = ingressClass
+	entryPoints := getStringValue(ingress.GetAnnotations(), annotationKubernetesFrontendEntryPoints, "")
+	if entryPoints != "" {
+		newIngress.GetAnnotations()["traefik.ingress.kubernetes.io/router.entrypoints"] = entryPoints
+	}
+
+	sslRedirect := getStringValue(ingress.GetAnnotations(), annotationKubernetesSSLRedirect, "")
+	if sslRedirect != "" {
+		middlewareNames = append(middlewareNames, sslMiddlewareRef)
 	}
 
 	var middlewares []*v1alpha1.Middleware
@@ -237,137 +253,90 @@ func convertIngress(ingress *networking.Ingress) []runtime.Object {
 	headers := getHeadersMiddleware(ingress)
 	if headers != nil {
 		middlewares = append(middlewares, headers)
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", headers.GetName(), middlewareSuffix))
 	}
 
 	// Auth middleware
 	auth := getAuthMiddleware(ingress)
 	if auth != nil {
 		middlewares = append(middlewares, auth)
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", auth.GetName(), middlewareSuffix))
 	}
 
 	// Whitelist middleware
 	whiteList := getWhiteList(ingress)
 	if whiteList != nil {
 		middlewares = append(middlewares, whiteList)
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", whiteList.GetName(), middlewareSuffix))
 	}
-
-	// PassTLSCert middleware
-	passTLSCert := getPassTLSClientCert(ingress)
-	if passTLSCert != nil {
-		middlewares = append(middlewares, passTLSCert)
-	}
-
-	// rateLimit middleware
-	middlewares = append(middlewares, getRateLimit(ingress)...)
 
 	requestModifier := getStringValue(ingress.GetAnnotations(), annotationKubernetesRequestModifier, "")
 	if requestModifier != "" {
-		middleware, err := parseRequestModifier(ingress.GetNamespace(), requestModifier)
+		middleware, err := parseRequestModifier(ingress.GetNamespace(), requestModifier, ingress.GetName())
 		if err != nil {
-			log.Printf("Invalid %s: %v", annotationKubernetesRequestModifier, err)
+			log.Printf("Invalid %s: %v\n", annotationKubernetesRequestModifier, err)
+		} else {
+			middlewares = append(middlewares, middleware)
+			middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", middleware.GetName(), middlewareSuffix))
 		}
-
-		middlewares = append(middlewares, middleware)
 	}
 
-	var miRefs []v1alpha1.MiddlewareRef
-	for _, mi := range middlewares {
-		miRefs = append(miRefs, toRef(mi))
+	if appRoot := getStringValue(ingress.GetAnnotations(), annotationKubernetesAppRoot, ""); appRoot == "" {
+		redirect := getFrontendRedirect(ingress.GetNamespace(), ingress.GetName(), ingress.GetAnnotations())
+		if redirect != nil {
+			middlewares = append(middlewares, redirect)
+			middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", redirect.GetName(), middlewareSuffix))
+		}
 	}
 
-	routes, mi, err := createRoutes(ingress.GetNamespace(), ingress.Spec.Rules, ingress.GetAnnotations(), miRefs)
+	ruleType, stripPrefix, err := extractRuleType(ingress.GetAnnotations())
 	if err != nil {
 		log.Println(err)
-		return nil
+		return nil, nil
 	}
-	ingressRoute.Spec.Routes = routes
 
-	middlewares = append(middlewares, mi...)
+	for _, rule := range ingress.Spec.Rules {
+		for _, path := range rule.HTTP.Paths {
+			if len(path.Path) > 0 {
+				if stripPrefix {
+					mi := getStripPrefix(path, rule.Host+path.Path, ingress.GetNamespace())
+					middlewares = append(middlewares, mi)
+					middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", mi.GetName(), middlewareSuffix))
+				}
+
+				rewriteTarget := getStringValue(ingress.GetAnnotations(), annotationKubernetesRewriteTarget, "")
+				if rewriteTarget != "" {
+					if ruleType == ruleTypeReplacePath {
+						log.Printf("rewrite-target must not be used together with annotation %q\n", annotationKubernetesRuleType)
+						return nil, nil
+					}
+
+					mi := getReplacePathRegex(rule, path, ingress.GetNamespace(), rewriteTarget)
+					middlewares = append(middlewares, mi)
+					middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", mi.GetName(), middlewareSuffix))
+				}
+			}
+			redirect := getFrontendRedirectAppRoot(ingress.GetNamespace(), ingress.GetName(), ingress.GetAnnotations(), rule.Host+path.Path, path.Path)
+			if redirect != nil {
+				middlewares = append(middlewares, redirect)
+				middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", redirect.GetName(), middlewareSuffix))
+			}
+
+		}
+	}
+
+	if len(middlewareNames) > 0 {
+		newIngress.GetAnnotations()["traefik.ingress.kubernetes.io/router.middlewares"] = strings.Join(middlewareNames, ",")
+	}
 
 	sort.Slice(middlewares, func(i, j int) bool { return middlewares[i].Name < middlewares[j].Name })
 
-	objects := []runtime.Object{ingressRoute}
+	objects := []runtime.Object{}
 	for _, middleware := range middlewares {
 		objects = append(objects, middleware)
 	}
 
-	return objects
-}
-
-func createRoutes(namespace string, rules []networking.IngressRule, annotations map[string]string, middlewareRefs []v1alpha1.MiddlewareRef) ([]v1alpha1.Route, []*v1alpha1.Middleware, error) {
-	ruleType, stripPrefix, err := extractRuleType(annotations)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var mis []*v1alpha1.Middleware
-
-	var routes []v1alpha1.Route
-
-	for _, rule := range rules {
-		for _, path := range rule.HTTP.Paths {
-			miRefs := make([]v1alpha1.MiddlewareRef, 0, 1)
-			miRefs = append(miRefs, middlewareRefs...)
-
-			var rules []string
-
-			if len(rule.Host) > 0 {
-				rules = append(rules, fmt.Sprintf("Host(`%s`)", rule.Host))
-			}
-
-			if len(path.Path) > 0 {
-				rules = append(rules, fmt.Sprintf("%s(`%s`)", ruleType, path.Path))
-
-				if stripPrefix {
-					mi := getStripPrefix(path, rule.Host+path.Path, namespace)
-					mis = append(mis, mi)
-					miRefs = append(miRefs, toRef(mi))
-				}
-
-				rewriteTarget := getStringValue(annotations, annotationKubernetesRewriteTarget, "")
-				if rewriteTarget != "" {
-					if ruleType == ruleTypeReplacePath {
-						return nil, nil, fmt.Errorf("rewrite-target must not be used together with annotation %q", annotationKubernetesRuleType)
-					}
-
-					mi := getReplacePathRegex(rule, path, namespace, rewriteTarget)
-					mis = append(mis, mi)
-					miRefs = append(miRefs, toRef(mi))
-				}
-			}
-
-			redirect := getFrontendRedirect(namespace, annotations, rule.Host+path.Path, path.Path)
-			if redirect != nil {
-				mis = append(mis, redirect)
-				miRefs = append(miRefs, toRef(redirect))
-			}
-
-			if len(rules) > 0 {
-				sort.Slice(miRefs, func(i, j int) bool { return miRefs[i].Name < miRefs[j].Name })
-
-				routes = append(routes, v1alpha1.Route{
-					Match:    strings.Join(rules, " && "),
-					Kind:     "Rule",
-					Priority: getIntValue(annotations, annotationKubernetesPriority, 0),
-					Services: []v1alpha1.Service{
-						{
-							LoadBalancerSpec: v1alpha1.LoadBalancerSpec{
-								Name:      path.Backend.ServiceName,
-								Namespace: namespace,
-								Kind:      "Service",
-								// TODO pas de port en string dans ingressRoute ?
-								Port:   path.Backend.ServicePort.IntVal,
-								Scheme: getStringValue(annotations, annotationKubernetesProtocol, ""),
-							},
-						},
-					},
-					Middlewares: miRefs,
-				})
-			}
-		}
-	}
-
-	return routes, mis, nil
+	return newIngress, objects
 }
 
 func extractRuleType(annotations map[string]string) (string, bool, error) {
@@ -383,19 +352,12 @@ func extractRuleType(annotations map[string]string) (string, bool, error) {
 		ruleType = ruleTypePathPrefix
 		stripPrefix = true
 	case ruleTypeReplacePath:
-		log.Printf("Using %s as %s will be deprecated in the future. Please use the %s annotation instead", ruleType, annotationKubernetesRuleType, annotationKubernetesRequestModifier)
+		log.Printf("Using %s as %s will be deprecated in the future. Please use the %s annotation instead\n", ruleType, annotationKubernetesRuleType, annotationKubernetesRequestModifier)
 	default:
 		return "", false, fmt.Errorf("cannot use non-matcher rule: %q", ruleType)
 	}
 
 	return ruleType, stripPrefix, nil
-}
-
-func toRef(mi *v1alpha1.Middleware) v1alpha1.MiddlewareRef {
-	return v1alpha1.MiddlewareRef{
-		Name:      mi.Name,
-		Namespace: mi.Namespace,
-	}
 }
 
 func logUnsupported(ingress *networking.Ingress) {
@@ -407,16 +369,15 @@ func logUnsupported(ingress *networking.Ingress) {
 		annotationKubernetesMaxConnExtractorFunc:            "See https://docs.traefik.io/middlewares/inflightreq/",
 		annotationKubernetesResponseForwardingFlushInterval: "See https://docs.traefik.io/providers/kubernetes-crd/",
 		annotationKubernetesLoadBalancerMethod:              "See https://docs.traefik.io/providers/kubernetes-crd/",
-		annotationKubernetesPreserveHost:                    "See https://docs.traefik.io/providers/kubernetes-crd/",
-		annotationKubernetesSessionCookieName:               "Not supported yet.",
-		annotationKubernetesAffinity:                        "Not supported yet.",
 		annotationKubernetesAuthRealm:                       "See https://docs.traefik.io/middlewares/basicauth/",
 		annotationKubernetesServiceWeights:                  "See https://docs.traefik.io/providers/kubernetes-crd/",
+		annotationKubernetesProtocol:                        "set traefik.ingress.kubernetes.io/service.serversscheme on Service resource",
+		annotationKubernetesPreserveHost:                    "set traefik.ingress.kubernetes.io/service.passhostheader on Service resource",
 	}
 
 	for annot, msg := range unsupportedAnnotations {
 		if getStringValue(ingress.GetAnnotations(), annot, "") != "" {
-			fmt.Printf("%s/%s: The annotation %s must be converted manually. %s", ingress.GetNamespace(), ingress.GetName(), annot, msg)
+			fmt.Printf("%s/%s: The annotation %s on Ingress must be converted manually. %s\n", ingress.GetNamespace(), ingress.GetName(), annot, msg)
 		}
 	}
 }

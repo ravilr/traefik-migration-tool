@@ -8,10 +8,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/cobra/doc"
-	"github.com/traefik/traefik-migration-tool/acme"
 	"github.com/traefik/traefik-migration-tool/ingress"
-	"github.com/traefik/traefik-migration-tool/static"
 )
 
 var (
@@ -50,13 +47,13 @@ func main() {
 
 	ingressCmd := &cobra.Command{
 		Use:   "ingress",
-		Short: "Migrate 'Ingress' to Traefik 'IngressRoute' resources.",
-		Long:  "Migrate 'Ingress' to Traefik 'IngressRoute' resources.",
+		Short: "Migrate 'Ingress' to Traefik v1 & v2 compatible resources.",
+		Long:  "Migrate 'Ingress' to Traefik v1 & v2 compatible resources.",
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			fmt.Printf("Traefik Migration: %s - %s - %s\n", Version, Date, ShortCommit)
 
 			if ingressCfg.input == "" || ingressCfg.output == "" {
-				return errors.New("input and output flags are requires")
+				return errors.New("input and output flags are required")
 			}
 
 			info, err := os.Stat(ingressCfg.output)
@@ -83,51 +80,6 @@ func main() {
 	ingressCmd.Flags().StringVarP(&ingressCfg.output, "output", "o", "./output", "Output directory.")
 
 	rootCmd.AddCommand(ingressCmd)
-
-	acmeCfg := acmeConfig{}
-
-	acmeCmd := &cobra.Command{
-		Use:   "acme",
-		Short: "Migrate acme.json file from Traefik v1 to Traefik v2.",
-		Long:  "Migrate acme.json file from Traefik v1 to Traefik v2.",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return acme.Convert(acmeCfg.input, acmeCfg.output, acmeCfg.resolverName)
-		},
-	}
-
-	acmeCmd.Flags().StringVarP(&acmeCfg.input, "input", "i", "./acme.json", "Path to the acme.json file from Traefik v1.")
-	acmeCmd.Flags().StringVarP(&acmeCfg.output, "output", "o", "./acme-new.json", "Path to the acme.json file for Traefik v2.")
-	acmeCmd.Flags().StringVar(&acmeCfg.resolverName, "resolver", "default", "The name of the certificates resolver.")
-
-	rootCmd.AddCommand(acmeCmd)
-
-	staticCfg := staticConfig{}
-
-	staticCmd := &cobra.Command{
-		Use:   "static",
-		Short: "Migrate static configuration file from Traefik v1 to Traefik v2.",
-		Long: `Migrate static configuration file from Traefik v1 to Traefik v2.
-Convert only the static configuration.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return static.Convert(staticCfg.input, staticCfg.outputDir)
-		},
-	}
-
-	staticCmd.Flags().StringVarP(&staticCfg.input, "input", "i", "./traefik.toml", "Path to the traefik.toml file from Traefik v1.")
-	staticCmd.Flags().StringVarP(&staticCfg.outputDir, "output-dir", "d", "./static", "Path to the directory of the created files")
-
-	rootCmd.AddCommand(staticCmd)
-
-	docCmd := &cobra.Command{
-		Use:    "doc",
-		Short:  "Generate documentation",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return doc.GenMarkdownTree(rootCmd, "./docs")
-		},
-	}
-
-	rootCmd.AddCommand(docCmd)
 
 	versionCmd := &cobra.Command{
 		Use:   "version",

@@ -11,7 +11,7 @@ import (
 	"github.com/traefik/traefik/v2/pkg/config/dynamic"
 	"github.com/traefik/traefik/v2/pkg/provider/kubernetes/crd/traefik/v1alpha1"
 	"gopkg.in/yaml.v2"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -100,7 +100,7 @@ func getHeadersMiddleware(ingress *networking.Ingress) *v1alpha1.Middleware {
 		AllowedHosts:            getSliceStringValue(annotations, annotationKubernetesAllowedHosts),
 		HostsProxyHeaders:       getSliceStringValue(annotations, annotationKubernetesProxyHeaders),
 		SSLForceHost:            getBoolValue(annotations, annotationKubernetesSSLForceHost, false),
-		SSLRedirect:             getBoolValue(annotations, annotationKubernetesSSLRedirect, false),
+		SSLRedirect:             false,
 		SSLTemporaryRedirect:    getBoolValue(annotations, annotationKubernetesSSLTemporaryRedirect, false),
 		SSLHost:                 getStringValue(annotations, annotationKubernetesSSLHost, ""),
 		SSLProxyHeaders:         getMapValue(annotations, annotationKubernetesSSLProxyHeaders),
@@ -123,13 +123,8 @@ func getHeadersMiddleware(ingress *networking.Ingress) *v1alpha1.Middleware {
 		return nil
 	}
 
-	hash, err := hashstructure.Hash(headers, nil)
-	if err != nil {
-		panic(err)
-	}
-
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%d", "headers", hash), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "headers"), Namespace: ingress.GetNamespace()},
 		Spec:       v1alpha1.MiddlewareSpec{Headers: headers},
 	}
 }
@@ -160,13 +155,8 @@ func getAuthMiddleware(ingress *networking.Ingress) *v1alpha1.Middleware {
 		return nil
 	}
 
-	hash, err := hashstructure.Hash(middleware, nil)
-	if err != nil {
-		panic(err)
-	}
-
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%d", "auth", hash), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "auth"), Namespace: ingress.GetNamespace()},
 		Spec:       middleware,
 	}
 }
@@ -222,13 +212,8 @@ func getWhiteList(ingress *networking.Ingress) *v1alpha1.Middleware {
 		middleware.IPWhiteList.IPStrategy = &dynamic.IPStrategy{}
 	}
 
-	hash, err := hashstructure.Hash(middleware, nil)
-	if err != nil {
-		panic(err)
-	}
-
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%d", "whitelist", hash), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "whitelist"), Namespace: ingress.GetNamespace()},
 		Spec:       middleware,
 	}
 }
@@ -262,7 +247,7 @@ func getPassTLSClientCert(ingress *networking.Ingress) *v1alpha1.Middleware {
 	}
 }
 
-func getFrontendRedirect(namespace string, annotations map[string]string, baseName, path string) *v1alpha1.Middleware {
+func getFrontendRedirectAppRoot(namespace string, name string, annotations map[string]string, baseName, path string) *v1alpha1.Middleware {
 	permanent := getBoolValue(annotations, annotationKubernetesRedirectPermanent, false)
 
 	if appRoot := getStringValue(annotations, annotationKubernetesAppRoot, ""); appRoot != "" && (path == "/" || path == "") {
@@ -271,8 +256,14 @@ func getFrontendRedirect(namespace string, annotations map[string]string, baseNa
 			regex = fmt.Sprintf("%s/$", baseName)
 		}
 
-		return getRedirectMiddleware(namespace, regex, fmt.Sprintf("%s/%s", strings.TrimRight(baseName, "/"), strings.TrimLeft(appRoot, "/")), permanent)
+		return getRedirectMiddleware(namespace, name, regex, fmt.Sprintf("%s/%s", strings.TrimRight(baseName, "/"), strings.TrimLeft(appRoot, "/")), permanent)
 	}
+
+	return nil
+}
+
+func getFrontendRedirect(namespace string, name string, annotations map[string]string) *v1alpha1.Middleware {
+	permanent := getBoolValue(annotations, annotationKubernetesRedirectPermanent, false)
 
 	redirectEntryPoint := getStringValue(annotations, annotationKubernetesRedirectEntryPoint, "")
 	if len(redirectEntryPoint) > 0 {
@@ -293,13 +284,13 @@ func getFrontendRedirect(namespace string, annotations map[string]string, baseNa
 	}
 
 	if len(redirectRegex) > 0 && len(redirectReplacement) > 0 {
-		return getRedirectMiddleware(namespace, redirectRegex, redirectReplacement, permanent)
+		return getRedirectMiddleware(namespace, name, redirectRegex, redirectReplacement, permanent)
 	}
 
 	return nil
 }
 
-func getRedirectMiddleware(namespace, regex, replacement string, permanent bool) *v1alpha1.Middleware {
+func getRedirectMiddleware(namespace, name, regex, replacement string, permanent bool) *v1alpha1.Middleware {
 	middleware := v1alpha1.MiddlewareSpec{
 		RedirectRegex: &dynamic.RedirectRegex{
 			Regex:       regex,
@@ -314,12 +305,12 @@ func getRedirectMiddleware(namespace, regex, replacement string, permanent bool)
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%d", "redirect", hash), Namespace: namespace},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s-%d", name, "redirect", hash), Namespace: namespace},
 		Spec:       middleware,
 	}
 }
 
-func parseRequestModifier(namespace, requestModifier string) (*v1alpha1.Middleware, error) {
+func parseRequestModifier(namespace, requestModifier, name string) (*v1alpha1.Middleware, error) {
 	trimmedRequestModifier := strings.TrimRight(requestModifier, " :")
 	if trimmedRequestModifier == "" {
 		return nil, fmt.Errorf("modifier %q is empty", requestModifier)
@@ -358,13 +349,8 @@ func parseRequestModifier(namespace, requestModifier string) (*v1alpha1.Middlewa
 		return nil, fmt.Errorf("cannot use non-modifier rule: %q", modifier)
 	}
 
-	hash, err := hashstructure.Hash(middleware, nil)
-	if err != nil {
-		panic(err)
-	}
-
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%d", "requestmodifier", hash), Namespace: namespace},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", name, "requestmodifier"), Namespace: namespace},
 		Spec:       middleware,
 	}, nil
 }

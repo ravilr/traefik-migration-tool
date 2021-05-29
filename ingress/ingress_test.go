@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/traefik/traefik/v2/pkg/provider/kubernetes/crd/traefik/v1alpha1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 )
 
 var updateExpected = flag.Bool("update_expected", false, "Update expected files in testdata")
@@ -95,7 +95,7 @@ func Test_convertIngress(t *testing.T) {
 			objectIngress, err := parseYaml(bytes)
 			require.NoError(t, err)
 
-			objects := convertIngress(objectIngress.(*networking.Ingress))
+			_, objects := convertIngress(objectIngress.(*networking.Ingress))
 
 			if !*updateExpected {
 				require.Len(t, objects, test.objectCount)
