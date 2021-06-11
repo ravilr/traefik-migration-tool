@@ -249,25 +249,25 @@ func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime
 
 	var middlewares []*v1alpha1.Middleware
 
-	// Headers middleware
-	headers := getHeadersMiddleware(ingress)
-	if headers != nil {
-		middlewares = append(middlewares, headers)
-		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", headers.GetName(), middlewareSuffix))
-	}
-
 	// Auth middleware
 	auth := getAuthMiddleware(ingress)
 	if auth != nil {
 		middlewares = append(middlewares, auth)
-		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", auth.GetName(), middlewareSuffix))
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", auth.GetNamespace(), auth.GetName(), middlewareSuffix))
+	}
+
+	// Headers middleware
+	headers := getHeadersMiddleware(ingress)
+	if headers != nil {
+		middlewares = append(middlewares, headers)
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", headers.GetNamespace(), headers.GetName(), middlewareSuffix))
 	}
 
 	// Whitelist middleware
 	whiteList := getWhiteList(ingress)
 	if whiteList != nil {
 		middlewares = append(middlewares, whiteList)
-		middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", whiteList.GetName(), middlewareSuffix))
+		middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", whiteList.GetNamespace(), whiteList.GetName(), middlewareSuffix))
 	}
 
 	requestModifier := getStringValue(ingress.GetAnnotations(), annotationKubernetesRequestModifier, "")
@@ -277,7 +277,7 @@ func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime
 			log.Printf("Invalid %s: %v\n", annotationKubernetesRequestModifier, err)
 		} else {
 			middlewares = append(middlewares, middleware)
-			middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", middleware.GetName(), middlewareSuffix))
+			middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", middleware.GetNamespace(), middleware.GetName(), middlewareSuffix))
 		}
 	}
 
@@ -285,7 +285,7 @@ func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime
 		redirect := getFrontendRedirect(ingress.GetNamespace(), ingress.GetName(), ingress.GetAnnotations())
 		if redirect != nil {
 			middlewares = append(middlewares, redirect)
-			middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", redirect.GetName(), middlewareSuffix))
+			middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", redirect.GetNamespace(), redirect.GetName(), middlewareSuffix))
 		}
 	}
 
@@ -301,7 +301,7 @@ func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime
 				if stripPrefix {
 					mi := getStripPrefix(path, rule.Host+path.Path, ingress.GetNamespace())
 					middlewares = append(middlewares, mi)
-					middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", mi.GetName(), middlewareSuffix))
+					middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", mi.GetNamespace(), mi.GetName(), middlewareSuffix))
 				}
 
 				rewriteTarget := getStringValue(ingress.GetAnnotations(), annotationKubernetesRewriteTarget, "")
@@ -313,13 +313,13 @@ func convertIngress(ingress *networking.Ingress) (*networking.Ingress, []runtime
 
 					mi := getReplacePathRegex(rule, path, ingress.GetNamespace(), rewriteTarget)
 					middlewares = append(middlewares, mi)
-					middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", mi.GetName(), middlewareSuffix))
+					middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", mi.GetNamespace(), mi.GetName(), middlewareSuffix))
 				}
 			}
 			redirect := getFrontendRedirectAppRoot(ingress.GetNamespace(), ingress.GetName(), ingress.GetAnnotations(), rule.Host+path.Path, path.Path)
 			if redirect != nil {
 				middlewares = append(middlewares, redirect)
-				middlewareNames = append(middlewareNames, fmt.Sprintf("%s@%s", redirect.GetName(), middlewareSuffix))
+				middlewareNames = append(middlewareNames, fmt.Sprintf("%s-%s@%s", redirect.GetNamespace(), redirect.GetName(), middlewareSuffix))
 			}
 
 		}
