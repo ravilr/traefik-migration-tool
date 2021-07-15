@@ -124,7 +124,7 @@ func getHeadersMiddleware(ingress *networking.Ingress) *v1alpha1.Middleware {
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "headers"), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", normalizeObjectName(ingress.GetName()), "headers"), Namespace: ingress.GetNamespace()},
 		Spec:       v1alpha1.MiddlewareSpec{Headers: headers},
 	}
 }
@@ -156,7 +156,7 @@ func getAuthMiddleware(ingress *networking.Ingress) *v1alpha1.Middleware {
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "auth"), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", normalizeObjectName(ingress.GetName()), "auth"), Namespace: ingress.GetNamespace()},
 		Spec:       middleware,
 	}
 }
@@ -213,7 +213,7 @@ func getWhiteList(ingress *networking.Ingress) *v1alpha1.Middleware {
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", ingress.GetName(), "whitelist"), Namespace: ingress.GetNamespace()},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", normalizeObjectName(ingress.GetName()), "whitelist"), Namespace: ingress.GetNamespace()},
 		Spec:       middleware,
 	}
 }
@@ -305,7 +305,7 @@ func getRedirectMiddleware(namespace, name, regex, replacement string, permanent
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s-%d", name, "redirect", hash), Namespace: namespace},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s-%d", normalizeObjectName(name), "redirect", hash), Namespace: namespace},
 		Spec:       middleware,
 	}
 }
@@ -350,7 +350,7 @@ func parseRequestModifier(namespace, requestModifier, name string) (*v1alpha1.Mi
 	}
 
 	return &v1alpha1.Middleware{
-		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", name, "requestmodifier"), Namespace: namespace},
+		ObjectMeta: v1.ObjectMeta{Name: fmt.Sprintf("%s-%s", normalizeObjectName(name), "requestmodifier"), Namespace: namespace},
 		Spec:       middleware,
 	}, nil
 }

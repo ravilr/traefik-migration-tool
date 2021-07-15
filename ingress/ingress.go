@@ -385,7 +385,7 @@ func logUnsupported(ingress *networking.Ingress) {
 // https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
 func normalizeObjectName(name string) string {
 	fn := func(c rune) bool {
-		return !unicode.IsLetter(c) && !unicode.IsNumber(c) && c != '.' && c != '-'
+		return !unicode.IsLetter(c) && !unicode.IsNumber(c) && c != '-'
 	}
 
 	return strings.Join(strings.FieldsFunc(name, fn), "-")
